@@ -6,7 +6,12 @@ set -euo pipefail
 FEED_FILE=${FEED_FILE:-signals_feed.json}
 ENDPOINT=${ENDPOINT:-https://server.tokenbeep.com/v1/app/signal-feed/push}
 API_KEY=${API_KEY-}
+SUBSCRIPTION_ID=${SUBSCRIPTION_ID-}
 MAX_BYTES=1048576
+# 服务端 ERR_SIGNAL_FEED_PUSH_BUSY：该订阅正被定时拉取或另一次推送占用（租约），稍后重试即可。
+BUSY_CODE=2057
+BUSY_RETRIES=3
+BUSY_BACKOFF_BASE=${BUSY_BACKOFF_BASE:-5}
 
 fail() { echo "::error::$1" >&2; exit 1; }
 
@@ -14,6 +19,9 @@ fail() { echo "::error::$1" >&2; exit 1; }
 redact() { local s=$1; printf '%s' "${s//"$API_KEY"/***}"; }
 
 [[ -n $API_KEY ]] || fail "api_key 为空 / api_key is empty"
+if [[ -n $SUBSCRIPTION_ID && ! $SUBSCRIPTION_ID =~ ^[0-9]{1,19}$ ]]; then
+  fail "subscription_id 必须是纯数字 / subscription_id must be digits only"
+fi
 [[ -f $FEED_FILE && -r $FEED_FILE ]] || fail "文件不存在或不可读 / file missing or unreadable: $FEED_FILE"
 
 size=$(wc -c < "$FEED_FILE" | tr -d ' ')
@@ -30,28 +38,45 @@ umask 077
 printf 'Authorization: Bearer %s\n' "$API_KEY" > "$work/headers"
 resp="$work/resp"
 
-rc=0
-status=$(curl -sS --max-time 60 --retry 3 --retry-all-errors \
-  -o "$resp" -w '%{http_code}' \
-  -H "@$work/headers" \
-  -F "feed=@${FEED_FILE};type=application/json" \
-  "$ENDPOINT") || rc=$?
-if (( rc != 0 )); then
-  fail "请求失败（curl 退出码 ${rc}）/ request failed (curl exit ${rc})"
+form=(-F "feed=@${FEED_FILE};type=application/json")
+if [[ -n $SUBSCRIPTION_ID ]]; then
+  form+=(-F "subscription_id=${SUBSCRIPTION_ID}")
 fi
 
-body=$(cat "$resp")
-red=$(redact "$body")
-if [[ $status != 200 ]]; then
-  echo "HTTP $status" >&2
-  head -c 500 <<< "$red" >&2
-  echo >&2
-  fail "HTTP 状态码非 200 / non-200 HTTP status: $status"
-fi
+attempt=0
+while :; do
+  rc=0
+  status=$(curl -sS --max-time 60 --retry 3 --retry-all-errors \
+    -o "$resp" -w '%{http_code}' \
+    -H "@$work/headers" \
+    "${form[@]}" \
+    "$ENDPOINT") || rc=$?
+  if (( rc != 0 )); then
+    fail "请求失败（curl 退出码 ${rc}）/ request failed (curl exit ${rc})"
+  fi
 
-jq -e . > /dev/null 2>&1 <<< "$body" || fail "响应不是 JSON / response is not JSON"
+  body=$(cat "$resp")
+  red=$(redact "$body")
+  if [[ $status != 200 ]]; then
+    echo "HTTP $status" >&2
+    head -c 500 <<< "$red" >&2
+    echo >&2
+    fail "HTTP 状态码非 200 / non-200 HTTP status: $status"
+  fi
 
-err_code=$(jq -r '.err_code // empty' <<< "$body")
+  jq -e . > /dev/null 2>&1 <<< "$body" || fail "响应不是 JSON / response is not JSON"
+
+  err_code=$(jq -r '.err_code // empty' <<< "$body")
+  if [[ $err_code == "$BUSY_CODE" ]] && (( attempt < BUSY_RETRIES )); then
+    attempt=$((attempt + 1))
+    wait_s=$(( BUSY_BACKOFF_BASE * (1 << (attempt - 1)) ))
+    echo "订阅正在同步，${wait_s}s 后第 ${attempt} 次重试 / subscription busy, retry ${attempt} in ${wait_s}s" >&2
+    sleep "$wait_s"
+    continue
+  fi
+  break
+done
+
 if [[ $err_code != 100 ]]; then
   err_msg=$(jq -r '.err_msg // empty' <<< "$body")
   echo "err_code=$err_code" >&2

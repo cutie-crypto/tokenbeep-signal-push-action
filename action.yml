@@ -13,6 +13,10 @@ inputs:
   api_key:
     description: 'TokenBeep push API key. Must come from secrets, e.g. ${{ secrets.TOKENBEEP_API_KEY }}. 必须来自 secrets，例如 ${{ secrets.TOKENBEEP_API_KEY }}。'
     required: true
+  subscription_id:
+    description: 'Target subscription ID. Optional when your account has exactly one active feed subscription. 目标订阅 ID；账号下恰好一条进行中的订阅时可不填。'
+    required: false
+    default: ''
   endpoint:
     description: 'Push endpoint. 推送地址。'
     required: false
@@ -40,6 +44,7 @@ runs:
       env:
         FEED_FILE: ${{ inputs.file }}
         API_KEY: ${{ inputs.api_key }}
+        SUBSCRIPTION_ID: ${{ inputs.subscription_id }}
         ENDPOINT: ${{ inputs.endpoint }}
         ACTION_PATH: ${{ github.action_path }}
       run: bash "$ACTION_PATH/push.sh"
