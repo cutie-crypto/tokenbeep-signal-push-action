@@ -41,7 +41,12 @@ for ((i = 0; i < ${#args[@]}; i++)); do
   esac
 done
 if [[ -n ${FAKE_CURL_EXIT-} ]]; then exit "$FAKE_CURL_EXIT"; fi
-[[ -n $out ]] && printf '%s' "${FAKE_BODY-}" > "$out"
+n=$(( $(cat "$FAKE_LOG.calls" 2> /dev/null || echo 0) + 1 ))
+echo "$n" > "$FAKE_LOG.calls"
+body=${FAKE_BODY-}
+# FAKE_SEQ：目录，第 n 次调用若存在文件 n 就用它作响应体（模拟 busy 之后成功）
+if [[ -n ${FAKE_SEQ-} && -f $FAKE_SEQ/$n ]]; then body=$(cat "$FAKE_SEQ/$n"); fi
+[[ -n $out ]] && printf '%s' "$body" > "$out"
 [[ $w == *http_code* ]] && printf '%s' "${FAKE_STATUS:-200}"
 exit 0
 FAKE
@@ -58,12 +63,13 @@ run_case() {
   (
     export PATH="$TMP/bin:$PATH"
     export FAKE_LOG="$d/fake" RUNNER_TEMP="$d/rt" GITHUB_OUTPUT="$d/gh"
-    export FEED_FILE="$FEED" API_KEY="$KEY"
+    export FEED_FILE="$FEED" API_KEY="$KEY" SUBSCRIPTION_ID="${SUB-}" BUSY_BACKOFF_BASE=0
     if [[ -n ${EP-} ]]; then export ENDPOINT="$EP"; else unset ENDPOINT; fi
     bash "$PUSH" > "$d/out" 2> "$d/err"
     echo $? > "$d/rc"
   )
   touch "$d/fake.argv" "$d/fake.hdr"
+  CALLS=$(cat "$d/fake.calls" 2> /dev/null || echo 0)
   RC=$(cat "$d/rc")
   # add-mask 行本来就是要把 key 交给 runner 的，不算泄露；其余输出一律不许出现 key
   grep -v '^::add-mask::' "$d/out" > "$d/out.filtered"
@@ -149,6 +155,36 @@ FEED="$TMP/feed.json"; KEY=""
 run_case nokey
 check "key 为空：退出 1" equals "$RC" 1
 check "key 为空：没有调用 curl" equals "$(wc -c < "$TMP/nokey/fake.argv" | tr -d ' ')" 0
+
+# 7. subscription_id
+KEY=$(new_key); FEED="$TMP/feed.json"; FAKE_BODY=$OK_BODY; FAKE_STATUS=200; export FAKE_BODY FAKE_STATUS
+check "未填 subscription_id：不发该字段" not_contains "$TMP/ok/fake.argv" "subscription_id="
+SUB=320703005781401600
+run_case sub
+check "填 subscription_id：退出 0" equals "$RC" 0
+check "填 subscription_id：以表单字段上传" contains "$TMP/sub/fake.argv" "subscription_id=$SUB"
+SUB="12a"
+run_case badsub
+check "subscription_id 非数字：退出 1" equals "$RC" 1
+check "subscription_id 非数字：没有调用 curl" equals "$(wc -c < "$TMP/badsub/fake.argv" | tr -d ' ')" 0
+SUB=""
+
+# 8. busy 退避重试
+BUSY_BODY='{"err_code":2057,"err_msg":"订阅正在同步，请稍后重试","data":null}'
+mkdir -p "$TMP/seq1"; printf '%s' "$BUSY_BODY" > "$TMP/seq1/1"; printf '%s' "$BUSY_BODY" > "$TMP/seq1/2"
+KEY=$(new_key); FAKE_SEQ="$TMP/seq1"; FAKE_BODY=$OK_BODY; export FAKE_SEQ FAKE_BODY
+run_case busyok
+check "busy 两次后成功：退出 0" equals "$RC" 0
+check "busy 两次后成功：共请求 3 次" equals "$CALLS" 3
+check "busy 两次后成功：打印重试提示" contains "$TMP/busyok/err" "第 2 次重试"
+check "busy 两次后成功：输出最终结果" contains "$TMP/busyok/out" "accepted=3 skipped=2 rejected=1 last_event_id=42"
+unset FAKE_SEQ
+KEY=$(new_key); FAKE_BODY=$BUSY_BODY; export FAKE_BODY
+run_case busyfail
+check "一直 busy：退出 1" equals "$RC" 1
+check "一直 busy：首次 + 重试 3 次共 4 次" equals "$CALLS" 4
+check "一直 busy：打印 err_code" contains "$TMP/busyfail/err" "err_code=2057"
+FAKE_BODY=$OK_BODY; export FAKE_BODY
 
 echo "PASS $pass/$total"
 [[ $pass == "$total" ]]
