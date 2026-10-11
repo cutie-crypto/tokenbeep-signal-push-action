@@ -1,0 +1,45 @@
+name: 'TokenBeep Signal Push'
+description: 'Push a signals_feed.json (schema=1) to TokenBeep. 把 signals_feed.json 推送到 TokenBeep。'
+author: 'TokenBeep'
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  file:
+    description: 'Path to the feed JSON file. 信号 feed 文件路径。'
+    required: false
+    default: 'signals_feed.json'
+  api_key:
+    description: 'TokenBeep push API key. Must come from secrets, e.g. ${{ secrets.TOKENBEEP_API_KEY }}. 必须来自 secrets，例如 ${{ secrets.TOKENBEEP_API_KEY }}。'
+    required: true
+  endpoint:
+    description: 'Push endpoint. 推送地址。'
+    required: false
+    default: 'https://server.tokenbeep.com/v1/app/signal-feed/push'
+
+outputs:
+  accepted:
+    description: 'Number of accepted events. 接受条数。'
+    value: ${{ steps.push.outputs.accepted }}
+  skipped:
+    description: 'Number of skipped (already known) events. 跳过条数。'
+    value: ${{ steps.push.outputs.skipped }}
+  rejected:
+    description: 'Number of rejected events. 拒绝条数。'
+    value: ${{ steps.push.outputs.rejected }}
+  last_event_id:
+    description: 'Last event id seen by the server. 服务端最新事件 ID。'
+    value: ${{ steps.push.outputs.last_event_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: push
+      shell: bash
+      env:
+        FEED_FILE: ${{ inputs.file }}
+        API_KEY: ${{ inputs.api_key }}
+        ENDPOINT: ${{ inputs.endpoint }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/push.sh"

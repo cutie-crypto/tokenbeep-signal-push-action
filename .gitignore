@@ -1,0 +1,4 @@
+.DS_Store
+*.log
+.env
+signals_feed.json
