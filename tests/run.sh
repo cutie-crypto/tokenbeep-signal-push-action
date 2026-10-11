@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# FAKE_BODY 等变量是原样交给假 curl 的 JSON 响应体（经环境变量传递，不做词法展开），引号是数据本身。
+# shellcheck disable=SC2089,SC2090
 # 不联网的单元测试：PATH 前面放一个假 curl，按环境变量返回预设状态码和响应体。
 set -uo pipefail
 
@@ -50,7 +52,7 @@ new_key() { echo "tbk_$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 # run_case <名称>：用当前环境变量 FEED / KEY / EP / FAKE_* 跑 push.sh
 # 产物：$TMP/<名称>/{out,err,argv,hdr,gh,rc}
 run_case() {
-  local name=$1 d="$TMP/$1"
+  local d="$TMP/$1"
   mkdir -p "$d/rt"
   : > "$d/gh"
   (
