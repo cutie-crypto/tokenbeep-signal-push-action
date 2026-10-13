@@ -24,8 +24,8 @@ GitHub → 仓库 **Settings → General → 页面底部 Danger Zone → Change
 
 After this, only repo collaborators can read `signals_feed.json`; users who do not subscribe to you on TokenBeep can no longer get the data. Actions keeps working on private repos.
 
-如果你原来用的是「公开 raw 地址 + URL 拉取」订阅，转私有会让它拉取失败；请接着做第 2 步，并参考文末「从 URL 拉取迁移」。
-If you migrated from a public raw URL subscription, it starts failing once the repo is private; continue with step 2 and see "Migrating from a URL pull subscription" below.
+如果你原来用的是「公开 raw 地址 + URL 拉取」订阅：**先不要转私有**，按文末「从 URL 拉取迁移」的顺序操作（先暂停旧订阅、接好推送，再转私有）。
+If you migrated from a public raw URL subscription, do **not** make the repo private first — follow "Migrating from a URL pull subscription" below (pause the old subscription, get push working, then go private).
 
 ### 2. 建「GitHub Action 推送」订阅 / Create the push subscription
 
@@ -95,7 +95,7 @@ jobs:
 Trigger the workflow once from the Actions tab. On success the log ends with `accepted=... skipped=...`; the subscription's last-success time and watermark advance, and new signals show up on your profile.
 
 - 同一文件重推不会重复发信号（都计入 `skipped`）。Re-pushing the same file only counts `skipped`.
-- 订阅正被拉取或另一次推送占用时服务端回 2057，Action 自动退避重试 3 次（5s / 10s / 20s）。On HTTP 2057 the Action retries automatically 3 times with 5s / 10s / 20s backoff.
+- 服务端返回 `err_code=2057`（订阅正被拉取或另一次推送占用）时，Action 自动退避重试 3 次（5s / 10s / 20s）。When the server returns `err_code=2057` (subscription busy), the Action retries automatically 3 times with 5s / 10s / 20s backoff.
 
 ## 输入 / Inputs
 
@@ -129,7 +129,7 @@ Trigger the workflow once from the Actions tab. On success the log ends with `ac
 | `文件不存在或不可读` | `file` 路径不对，或机器人没写出文件 | 让 `file:` 与生成步骤的输出路径一致 |
 | `文件超过 1 MiB` | feed 超限 | 按平台容量规则瘦身：只裁已消费事件，`next_event_id` 不重置 |
 | `不是合法 JSON` | 半截或非法 JSON | 本地 `jq . signals_feed.json` 通过后再提交 |
-| `请求失败（curl 退出码）` | 网络问题，平台不可达 | 稍后重跑一次 |
+| `请求失败（curl 退出码 N）` | 网络问题，平台不可达 | 稍后重跑一次 |
 | `HTTP 状态码非 200` | 网关或服务异常 | 稍后重跑；持续出现联系平台 |
 | `响应不是 JSON` | 请求打到了非预期地址（endpoint 被改或走错代理） | 检查 `endpoint` 输入，默认官方地址一般不用改 |
 | `err_code=202` | 无效 token：Key 错了、已撤销或过期 | 到「外部接入」重新生成「发信号」Key，更新仓库 secret |
@@ -143,15 +143,16 @@ Trigger the workflow once from the Actions tab. On success the log ends with `ac
 
 ## 从 URL 拉取迁移 / Migrating from a URL pull subscription
 
-原本「公开 raw 文件 + URL 拉取」的用户：
+原本「公开 raw 文件 + URL 拉取」的用户**不要**按上面的顺序先转私有，按这里的顺序走：
 
-1. 先按第 2、3 步建好推送订阅并配好 secret 与 workflow（把推送侧准备好）。
-2. 到平台断开（或先暂停）旧的 URL 订阅——仓库转私有后它本已拉不到文件。新旧订阅不要同时运行，否则同一条事件会被两个订阅各发一次。
-3. 再把仓库转私有（第 1 步），然后触发首次推送（第 4 步）。
+1. **先暂停**旧的 URL 订阅（订阅详情 → 暂停）。暂停会立即停止拉取、保留进度，不是终态；旧订阅暂停前不要执行推送——新旧两个订阅同时运行会把同一条事件各发一次。
+2. 按第 2 步新建「GitHub Action 推送」订阅（上传当前 feed），按第 3 步配好 secret 与 workflow。旧订阅暂停后不算「进行中」，若账号下没有其它进行中的订阅，首次推送可以不填 `subscription_id`。
+3. 把仓库转私有（第 1 步），触发首次推送（第 4 步），确认信号按预期进来。
+4. 确认无误后再断开旧订阅（终态）。**断开前想清楚**：旧订阅产生的未平仓信号会被标记为手动、不再自动更新，跟随这些信号的用户也不会自动迁到新订阅；若此时还有未平仓仓位，先和平台确认迁移方式。
 
-切换期间的历史事件不补发；当前未平仓仓位在新建推送订阅时以「接入时已持有」快照导入，之后的加仓 / 移止损 / 平仓事件经推送正常同步。旧订阅断开时，它名下的未平仓仓位会转为手动。
+补充：切换期间的历史事件不补发；当前未平仓仓位在新建推送订阅时以「接入时已持有」快照导入，之后的加仓 / 移止损 / 平仓事件经推送正常同步。
 
-Migration from a public raw URL feed: set up the push subscription and workflow first, then disconnect (or pause) the old URL subscription, then make the repo private and trigger the first push. Do not run both subscriptions at once, or the same event is published twice. Events from the transition window are not replayed; open positions are imported as an "already held at setup" snapshot and continue through pushes.
+For an existing public raw URL feed, do **not** start with "make the repo private". Instead: 1) pause the old URL subscription first (stops polling, keeps its watermark) and do not push while it is still running — running both publishes the same event twice; 2) create the push subscription and set up the secret/workflow; a paused subscription does not count as active, so if no other subscription is active the first push does not need `subscription_id`; 3) make the repo private and trigger the first push; 4) only after everything looks right, disconnect the old subscription (terminal). Note: disconnecting marks its open signals as manual — they stop updating automatically and their followers do not migrate to the new subscription; if positions are still open, check with the platform first. Events from the transition window are not replayed; open positions are imported as an "already held at setup" snapshot and continue through pushes.
 
 ## 安全 / Security
 
